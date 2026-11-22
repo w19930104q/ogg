@@ -773,21 +773,77 @@ int ogg_sync_pageout(ogg_sync_state *oy, ogg_page *og){
    into packet segments here as well. */
 
 int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
-  unsigned char *header=og->header;
-  unsigned char *body=og->body;
-  long           bodysize=og->body_len;
+  unsigned char *header;
+  unsigned char *body;
+  long           bodysize;
   int            segptr=0;
 
-  int version=ogg_page_version(og);
-  int continued=ogg_page_continued(og);
-  int bos=ogg_page_bos(og);
-  int eos=ogg_page_eos(og);
-  ogg_int64_t granulepos=ogg_page_granulepos(og);
-  int serialno=ogg_page_serialno(og);
-  long pageno=ogg_page_pageno(og);
-  int segments=header[26];
+  int version,continued,bos,eos,serialno,segments;
+  ogg_int64_t granulepos;
+  long pageno;
+  long expected;
+  int i;
 
   if(ogg_stream_check(os)) return -1;
+  if(!og) return(-1);
+
+  header=og->header;
+  body=og->body;
+  bodysize=og->body_len;
+
+  /* Validate the page structure before mutating any stream state.
+     A page rejected here leaves the stream untouched, so the packet
+     accounting is identical regardless of how the surrounding byte
+     stream was delivered (whole pages, arbitrary byte fragments, or
+     extra data inserted between pages). */
+  if(!header || og->header_len<27 || bodysize<0 ||
+     (!body && bodysize>0))
+    return(-1);
+
+  segments=header[26];
+  if(og->header_len<27+segments)
+    return(-1);
+
+  version=ogg_page_version(og);
+  continued=ogg_page_continued(og);
+  bos=ogg_page_bos(og);
+  eos=ogg_page_eos(og);
+  granulepos=ogg_page_granulepos(og);
+  serialno=ogg_page_serialno(og);
+  pageno=ogg_page_pageno(og);
+
+  /* A continued page may begin with segments that finish a packet
+     begun on a previous page.  If no such packet is pending, the
+     leading segments describe an undeliverable fragment and have to
+     be skipped.  Run this as a read-only dry run first so a malformed
+     page can still be rejected without touching the stream state. */
+  if(continued){
+    if(os->lacing_fill<1 ||
+       (os->lacing_vals[os->lacing_fill-1]&0xff)<255 ||
+       os->lacing_vals[os->lacing_fill-1]==0x400){
+      bos=0;
+      for(;segptr<segments;segptr++){
+        int val=header[27+segptr];
+        if(bodysize<val)return(-1);
+        body+=val;
+        bodysize-=val;
+        if(val<255){
+          segptr++;
+          break;
+        }
+      }
+    }
+  }
+
+  /* Per RFC 3533 the segment table sums exactly to the page body
+     length.  Reject pages whose claimed body does not match their
+     segment table; accepting them would desynchronize the body and
+     lacing bookkeeping (out-of-bounds reads and negative-length
+     moves on later calls). */
+  expected=0;
+  for(i=segptr;i<segments;i++)
+    expected+=header[27+i];
+  if(expected!=bodysize)return(-1);
 
   /* clean up 'returned data' */
   {
@@ -824,7 +880,6 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
 
   /* are we in sequence? */
   if(pageno!=os->pageno){
-    int i;
 
     /* unroll previous partial packet (if any) */
     for(i=os->lacing_packet;i<os->lacing_fill;i++)
@@ -838,25 +893,8 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
     }
   }
 
-  /* are we a 'continued packet' page?  If so, we may need to skip
-     some segments */
-  if(continued){
-    if(os->lacing_fill<1 ||
-       (os->lacing_vals[os->lacing_fill-1]&0xff)<255 ||
-       os->lacing_vals[os->lacing_fill-1]==0x400){
-      bos=0;
-      for(;segptr<segments;segptr++){
-        int val=header[27+segptr];
-        body+=val;
-        bodysize-=val;
-        if(val<255){
-          segptr++;
-          break;
-        }
-      }
-    }
-  }
-
+  /* the segment/body consistency check above guarantees bodysize
+     bytes of retained body data are actually available */
   if(bodysize){
     if(_os_body_expand(os,bodysize)) return -1;
     memcpy(os->body_data+os->body_fill,body,bodysize);
@@ -971,7 +1009,13 @@ static int _packetout(ogg_stream_state *os,ogg_packet *op,int adv){
     int bos=os->lacing_vals[ptr]&0x100; /* first packet of the stream? */
 
     while(size==255){
-      int val=os->lacing_vals[++ptr];
+      int val;
+      if(ptr+1>=os->lacing_fill){
+        /* segment table ends mid-packet without a terminating
+           segment; the packet is not complete yet. */
+        return(0);
+      }
+      val=os->lacing_vals[++ptr];
       size=val&0xff;
       if(val&0x200)eos=0x200;
       bytes+=size;

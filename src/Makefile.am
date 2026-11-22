@@ -9,13 +9,18 @@ libogg_la_LDFLAGS = -no-undefined -version-info @LIB_CURRENT@:@LIB_REVISION@:@LI
 
 # build and run the self tests on 'make check'
 
-noinst_PROGRAMS = test_bitwise test_framing
+noinst_PROGRAMS = test_bitwise test_framing test_lacing_boundaries
 
 test_bitwise_SOURCES = bitwise.c
 test_bitwise_CFLAGS = -D_V_SELFTEST
 
 test_framing_SOURCES = framing.c crctable.h
 test_framing_CFLAGS = -D_V_SELFTEST
+
+# Links against the built library and validates the encoded bitstream
+# against the public Ogg page format with an independent RFC 3533 parser.
+test_lacing_boundaries_SOURCES = lacing_boundaries_test.c
+test_lacing_boundaries_LDADD = libogg.la
 
 TEST_ENV = @TEST_ENV@
 LOG_COMPILER=$(LIBTOOL) --mode=execute $(VALGRIND) $(TEST_ENV)

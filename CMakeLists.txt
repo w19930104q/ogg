@@ -178,7 +178,10 @@ if(INSTALL_DOCS)
     install(DIRECTORY doc/libogg DESTINATION ${CMAKE_INSTALL_DOCDIR}/html PATTERN "*.am" EXCLUDE)
 endif()
 
+option(BUILD_TESTING "Build the testing tree." ON)
 if(BUILD_TESTING)
+    enable_testing()
+
     add_executable(test_bitwise src/bitwise.c ${OGG_HEADERS})
     target_compile_definitions(test_bitwise PRIVATE _V_SELFTEST)
     target_include_directories(test_bitwise PRIVATE
@@ -194,6 +197,11 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_BINARY_DIR}/include
     )
     add_test(NAME test_framing COMMAND $<TARGET_FILE:test_framing>)
+
+    add_executable(test_lacing_boundaries src/lacing_boundaries_test.c ${OGG_HEADERS})
+    target_link_libraries(test_lacing_boundaries PRIVATE ogg)
+    add_test(NAME test_lacing_boundaries
+        COMMAND $<TARGET_FILE:test_lacing_boundaries>)
 endif()
 
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
